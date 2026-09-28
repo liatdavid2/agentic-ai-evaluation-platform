@@ -1,0 +1,6 @@
+Put tau2-bench Retail files here:
+
+tasks.json
+db.json
+policy.md
+split_tasks.json (optional)

@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: ./backend
+    container_name: agent-eval-backend
+    env_file: .env
+    environment:
+      DATASET_DIR: /app/data/retail
+      DATABASE_PATH: /app/state/evals.db
+    volumes:
+      - ./data:/app/data:ro
+      - eval_state:/app/state
+    ports:
+      - "8007:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    container_name: agent-eval-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  eval_state:
