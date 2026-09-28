@@ -1,74 +1,52 @@
-import json
-import os
+import json, os
 from pathlib import Path
 from typing import Any
 
-DATASET_DIR = Path(os.getenv("DATASET_DIR", "/app/data/retail"))
+DATASET_DIR=Path(os.getenv("DATASET_DIR","/app/data/retail"))
 
-def _read_json(path: Path, default):
-    if not path.exists():
-        return default
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def _read_json(path,default):
+    if not path.exists(): return default
+    with path.open("r",encoding="utf-8") as f:return json.load(f)
 
-def dataset_status() -> dict[str, Any]:
-    tasks = _read_json(DATASET_DIR / "tasks.json", [])
-    if isinstance(tasks, dict) and isinstance(tasks.get("tasks"), list):
-        count = len(tasks["tasks"])
-    elif isinstance(tasks, list):
-        count = len(tasks)
-    elif isinstance(tasks, dict):
-        count = len(tasks)
-    else:
-        count = 0
+def dataset_status():
+    tasks=_read_json(DATASET_DIR/"tasks.json",[])
+    db=_read_json(DATASET_DIR/"db.json",{})
     return {
-        "tasks_json": (DATASET_DIR / "tasks.json").exists(),
-        "db_json": (DATASET_DIR / "db.json").exists(),
-        "policy_md": (DATASET_DIR / "policy.md").exists(),
-        "split_tasks_json": (DATASET_DIR / "split_tasks.json").exists(),
-        "task_count": count,
-        "ready": (DATASET_DIR / "tasks.json").exists(),
+        "tasks_json":(DATASET_DIR/"tasks.json").exists(),
+        "db_json":(DATASET_DIR/"db.json").exists(),
+        "policy_md":(DATASET_DIR/"policy.md").exists(),
+        "task_count":len(tasks) if isinstance(tasks,list) else 0,
+        "product_count":len(db.get("products",{})),
+        "user_count":len(db.get("users",{})),
+        "order_count":len(db.get("orders",{})),
+        "ready":all((DATASET_DIR/x).exists() for x in ["tasks.json","db.json","policy.md"])
     }
 
-def load_tasks() -> list[dict[str, Any]]:
-    raw = _read_json(DATASET_DIR / "tasks.json", [])
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, dict) and isinstance(raw.get("tasks"), list):
-        return raw["tasks"]
-    if isinstance(raw, dict):
-        vals = list(raw.values())
-        if vals and all(isinstance(x, dict) for x in vals):
-            return vals
-    return []
-
-def load_policy() -> str:
-    p = DATASET_DIR / "policy.md"
+def load_tasks(): return _read_json(DATASET_DIR/"tasks.json",[])
+def load_db(): return _read_json(DATASET_DIR/"db.json",{})
+def load_policy():
+    p=DATASET_DIR/"policy.md"
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
-def task_id(task: dict, index: int) -> str:
-    return str(task.get("id") or task.get("task_id") or task.get("ticket_id") or f"task-{index:04d}")
+def task_id(task,index): return str(task.get("id") or f"task-{index:04d}")
 
-def instruction(task: dict) -> str:
-    return str(task.get("instruction") or task.get("user_instruction") or task.get("prompt") or task.get("request") or "")
-
-def reference_actions(task: dict) -> list[dict]:
-    ec = task.get("evaluation_criteria")
-    candidates = [
-        task.get("actions"),
-        task.get("reference_actions"),
-        ec.get("actions") if isinstance(ec, dict) else None,
-        ec.get("reference_actions") if isinstance(ec, dict) else None,
+def instruction(task):
+    x=task.get("user_scenario",{}).get("instructions",{})
+    parts=[
+        x.get("task_instructions") or "",
+        "Reason for call: "+str(x.get("reason_for_call") or ""),
+        "Known information: "+str(x.get("known_info") or ""),
+        "Unknown information: "+str(x.get("unknown_info") or ""),
     ]
-    for c in candidates:
-        if isinstance(c, list):
-            return [x for x in c if isinstance(x, dict)]
-    return []
+    return "\n".join(p for p in parts if p and not p.endswith(": None"))
 
-def reference_tool_names(task: dict) -> list[str]:
-    out = []
-    for a in reference_actions(task):
-        n = a.get("name") or a.get("tool") or a.get("tool_name")
-        if n:
-            out.append(str(n))
-    return out
+def reference_actions(task):
+    x=task.get("evaluation_criteria",{}).get("actions",[])
+    return x if isinstance(x,list) else []
+
+def reference_tool_names(task):
+    return [str(a.get("name")) for a in reference_actions(task) if a.get("name")]
+
+def communicate_info(task):
+    x=task.get("evaluation_criteria",{}).get("communicate_info",[])
+    return [str(v) for v in x] if isinstance(x,list) else []

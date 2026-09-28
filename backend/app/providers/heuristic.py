@@ -1,41 +1,29 @@
-import asyncio
-import hashlib
+import asyncio, hashlib, copy
 from .base import AgentProvider
 from app.dataset import instruction, reference_actions
+from app.tooling import RetailToolExecutor
 
 class HeuristicProvider(AgentProvider):
-    async def run(self, task: dict, configuration: str, policy: str) -> dict:
-        await asyncio.sleep(0.01)
-        refs = reference_actions(task)
-        seed = int(hashlib.sha256((instruction(task) + configuration).encode()).hexdigest()[:8], 16)
-        keep_ratio = {"baseline":0.55, "tools":0.82, "reflection":0.90, "multi_agent":0.93}[configuration]
-
-        actual = []
-        for i, a in enumerate(refs):
-            if ((seed + i * 17) % 100) / 100 < keep_ratio:
-                actual.append({
-                    "name": a.get("name") or a.get("tool") or a.get("tool_name") or "unknown_tool",
-                    "arguments": a.get("arguments", {}),
-                    "status": "ok",
-                    "useful": True,
-                })
-
-        if configuration == "baseline" and seed % 4 == 0:
-            actual.append({"name":"unknown_tool","arguments":{},"status":"invalid","useful":False})
-        if configuration in {"tools","multi_agent"} and seed % 5 == 0 and actual:
-            actual.append({**actual[-1], "useful":False})
-
-        trace = [{"step":1,"type":"plan","message":f"Analyze task using {configuration}."}]
-        for j, call in enumerate(actual, start=2):
-            trace.append({"step":j,"type":"tool_call",**call})
-        success = len(refs) == 0 or len([x for x in actual if x["name"] != "unknown_tool"]) >= max(1, int(len(refs)*0.75))
-        trace.append({"step":len(trace)+1,"type":"final","message":"Task completed." if success else "Task failed."})
-
+    async def run(self,task,configuration,policy,db=None):
+        await asyncio.sleep(.01)
+        ex=RetailToolExecutor(db or {"products":{},"users":{},"orders":{}})
+        refs=reference_actions(task)
+        seed=int(hashlib.sha256((instruction(task)+configuration).encode()).hexdigest()[:8],16)
+        ratio={"baseline":.55,"tools":.82,"reflection":.90,"multi_agent":.93}[configuration]
+        trace=[]
+        for i,a in enumerate(refs):
+            if ((seed+i*17)%100)/100 < ratio:
+                name=a.get("name");args=a.get("arguments",{})
+                trace.append({"step":i+1,"type":"tool_call","name":name,"arguments":args})
+                result=ex.execute(name,args)
+                trace.append({"step":i+1,"type":"tool_result","name":name,"result":result})
+        final="Task completed." if ratio>.7 else "Unable to complete all requested actions."
+        trace.append({"step":len(refs)+1,"type":"final","message":final})
+        inp=250+seed%250;out=50+seed%80
         return {
-            "success": success,
-            "policy_compliant": seed % 19 != 0,
-            "tool_calls": actual,
-            "final_answer": "Task completed." if success else "Task could not be completed reliably.",
-            "trace": trace,
-            "tokens": 350 + seed % 800,
+            "tool_calls":[{k:v for k,v in c.items() if k in {"name","arguments","status","useful"}} for c in ex.calls],
+            "final_answer":final,"trace":trace,
+            "input_tokens":inp,"output_tokens":out,"cached_input_tokens":0,
+            "tokens":inp+out,"llm_turns":1,"termination_reason":"completed",
+            "environment":ex.db,
         }

@@ -1,104 +1,136 @@
-# Agentic AI Evaluation Platform — Deep Eval Edition
+# Agentic AI Evaluation Platform — v5 Token Budget Edition
 
-A focused Agentic / GenAI evaluation platform. No Grafana and no Prometheus: the project is centered on **evaluation depth**.
+This version is optimized for **much lower token usage** while keeping the evaluation visible and auditable.
 
-## Add the tau2-bench Retail data
+The uploaded Retail dataset is already included:
+- 114 tasks
+- 50 products
+- 500 users
+- 1000 orders
 
-```text
-data/retail/
-├── tasks.json
-├── db.json
-├── policy.md
-└── split_tasks.json   # optional
+## Key token-saving changes
+
+1. **Hard output budget per turn**
+   - `MAX_OUTPUT_TOKENS_PER_TURN=80`
+
+2. **Hard cumulative output budget per run**
+   - `MAX_OUTPUT_TOKENS_PER_RUN=180`
+   - once exhausted, the run ends with:
+     `output_token_budget_exceeded`
+
+3. **Fewer agent turns**
+   - `MAX_AGENT_STEPS=7`
+
+4. **Policy routing**
+   - only the policy sections relevant to the task are sent
+
+5. **Tool routing**
+   - only a relevant subset of tools is exposed to the model
+
+6. **Compact tool results**
+   - tool responses contain only fields the agent needs
+   - results are capped with `MAX_TOOL_RESULT_CHARS`
+
+7. **Parallel independent runs**
+   - `MAX_CONCURRENT_TASKS=3`
+
+## Default limits
+
+```env
+MAX_AGENT_STEPS=7
+MAX_OUTPUT_TOKENS_PER_TURN=80
+MAX_OUTPUT_TOKENS_PER_RUN=180
+MAX_TASK_INPUT_CHARS=1800
+MAX_POLICY_CHARS=2200
+MAX_TOOL_RESULT_CHARS=2500
+MAX_CONCURRENT_TASKS=3
 ```
 
-## Local run
+## What the UI now shows
+
+### Live
+- completed / total runs
+- input tokens so far
+- output tokens so far
+- tool calls so far
+- last run output-budget utilization
+- current task / stage / elapsed time
+- live log
+
+### After the run
+- average input tokens / run
+- average output tokens / run
+- P95 input / output tokens
+- total input / output tokens
+- average output-budget utilization
+- LLM turns / run
+- tools exposed / run
+- routed policy size
+- tool precision / recall / F1
+- argument accuracy
+- exact action recall
+- communication recall
+- task success / pass@k / pass^k
+- per-run inspector with token budget and trace
+
+## Run
 
 ```bat
 copy .env.example .env
+```
+
+Add:
+
+```env
+OPENAI_API_KEY=YOUR_KEY
+```
+
+If port 8000 is already occupied, change:
+
+```yaml
+# docker-compose.yml
+ports:
+  - "8001:8000"
+```
+
+and:
+
+```env
+VITE_API_BASE_URL=http://localhost:8001
+```
+
+Then:
+
+```bat
+docker compose down
 docker compose up --build
 ```
 
-Open:
+UI:
 
-- UI: http://localhost:8080
-- API docs: http://localhost:8000/docs
-
-## Evaluation coverage
-
-### 1. Outcome
-- Task Success Rate
-- `pass@k`
-- `pass^k`
-- Repeat Consistency
-
-### 2. Policy / guardrails
-- Policy Compliance Rate
-
-### 3. Tool-use evaluation
-- Tool Precision
-- Tool Recall
-- Tool F1
-- Argument Accuracy
-- Useful Tool Ratio
-- Invalid Calls / Run
-- Redundant Calls / Run
-- Extra Tool Ratio
-- Mean Tool Calls
-
-### 4. Trajectory evaluation
-- LCS-based Tool Order Score
-- Exact Tool Sequence Rate (diagnostic only)
-- Mean Trace Steps
-- Reference vs Actual trace inspector
-
-### 5. Efficiency
-- Mean / Median / P95 Latency
-- Mean / Median / P95 Tokens
-- Total Estimated Cost
-- Cost per Successful Run
-
-### 6. Failure analysis
-Automatic taxonomy:
-- task outcome failure
-- policy violation
-- missing reference tool
-- unexpected tool
-- invalid tool call
-- redundant tool call
-- argument mismatch
-- trajectory order mismatch
-
-### 7. Reproducibility
-- SQLite experiment history
-- CSV export of every run
-- Repeat count is configurable
-
-## Important evaluation principle
-
-Reference actions are **not** treated as the only valid path to success.
-Outcome metrics are kept separate from trajectory diagnostics so an alternative valid path can still receive a successful outcome.
-
-## Experiment configurations
-
-- Baseline
-- LLM + Tools
-- Tools + Reflection
-- Multi-Agent
-
-The default `heuristic` mode is a free smoke test for the pipeline.
-Use a real LLM provider for research results.
-
-## AWS / Terraform
-
-```bat
-cd infra\\terraform
-terraform init
-terraform apply -var="key_name=YOUR_KEY_NAME" -var="private_key_path=C:/path/key.pem"
+```text
+http://localhost:8080
 ```
 
-Destroy after use:
+## Recommended first experiment
 
-```bat
-terraform destroy -var="key_name=YOUR_KEY_NAME" -var="private_key_path=C:/path/key.pem"
+```text
+Tasks = 5
+Repeats = 1
+Provider = OpenAI
+Agent setup = LLM + Tools
 ```
+
+Check `Output / run` and `Output budget used`. If these stay comfortably below the 180-token cap and quality remains acceptable, scale to 20 tasks.
+
+## Cost
+
+Token counts are real. Dollar cost is only calculated if you explicitly set current model pricing:
+
+```env
+INPUT_COST_PER_1M=...
+CACHED_INPUT_COST_PER_1M=...
+OUTPUT_COST_PER_1M=...
+```
+
+When unset, dollar metrics remain zero instead of pretending an outdated price is correct.
