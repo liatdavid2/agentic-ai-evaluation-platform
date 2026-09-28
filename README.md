@@ -167,3 +167,129 @@ Changes:
 - preserves v6 behavior that forces action tasks to continue using tools until a successful action is performed
 
 This fix removes orchestration-level 400 errors. It does **not** guarantee 100% benchmark success; remaining failures can still come from wrong tool selection, wrong arguments, insufficient routing, policy requirements, or tasks that need a user-simulator/confirmation turn.
+
+
+## v8 multi-turn user simulator
+
+This version addresses the main validity gap in earlier runs: many Retail tasks require an explicit user confirmation before a mutating action.
+
+New flow:
+
+```text
+User task
+  -> Agent
+  -> Tool(s)
+  -> Agent asks for confirmation
+  -> Deterministic user simulator replies
+  -> Agent performs mutating tool action
+  -> Final response
+```
+
+Key changes:
+- Added `ScriptedUserSimulator` with no extra LLM/API cost.
+- The simulator only answers confirmation-style questions; it does not invent database facts.
+- Before authentication, action tasks require a tool call.
+- After authentication, `tool_choice=auto` so the agent can ask for policy-required confirmation.
+- After simulator confirmation, the agent can continue to the mutating action.
+- Added `premature_final_before_action` termination reason.
+- Added response status and incomplete-reason tracking.
+- Added reasoning-token tracking when reported by the API.
+- UI now shows user-simulator turns and reasoning-token usage.
+- Existing v7 fix for matching every function call with a function-call output remains intact.
+
+Important:
+The simulator is intentionally deterministic and lightweight. It improves benchmark fidelity for confirmation flows without adding another model call, but it is not a full conversational user model.
+
+
+## v9 — industry-style guardrails
+
+This version adds a production-style runtime guardrail layer without hard-coding the benchmark gold trajectory.
+
+### Two comparable agent setups
+
+**Free Agent**
+- LLM + tools + policy
+- model chooses tools and arguments directly
+
+**Guardrailed Agent**
+- same LLM, tools and policy
+- deterministic validation before tool execution
+- invalid calls are rejected with a structured repair hint
+- agent may retry
+
+### Guardrails implemented
+
+- authentication required before personal-state tools
+- `user_id` must have been observed previously
+- `order_id` must have been observed previously
+- `product_id` must have been observed previously
+- item ids must have been observed previously
+- payment method ids must come from observed user details
+- mutating tools require explicit confirmation
+- rejected tool calls never reach the environment
+- repair messages are returned to the model
+
+The guardrails do **not** know the reference/gold trajectory. They enforce generic invariants only.
+
+### New evaluation signal
+
+The UI now reports:
+
+```text
+Guardrail rejects / run
+```
+
+and each run records the rejected call, reason and repair hint. This enables a direct comparison:
+
+```text
+Free Agent
+vs
+Guardrailed Agent
+```
+
+on task success, tool F1, arguments, policy, tokens and latency.
+
+
+## v10 — output headroom + incomplete-response handling
+
+This version fixes a failure mode where the model used its entire small
+`max_output_tokens` allowance on hidden reasoning and emitted no tool call.
+
+Changes:
+- `MAX_OUTPUT_TOKENS_PER_TURN`: 220 -> 1200
+- `MAX_OUTPUT_TOKENS_PER_RUN`: 650 -> 4000
+- keeps `REASONING_EFFORT=low`
+- explicitly detects `response.status == "incomplete"` with
+  `incomplete_details.reason == "max_output_tokens"`
+- such runs terminate as `max_output_tokens` instead of being misclassified as
+  `premature_final_before_action`
+- UI text now explains that the cap is headroom and that reasoning tokens count
+  toward the output-token budget
+
+The larger caps are ceilings only; they do not force the model to consume all of
+those tokens.
+
+
+## v11 — port 8007 + request/React error fix
+
+This project now consistently uses:
+
+```text
+Backend host URL: http://localhost:8007
+Container backend port: 8000
+Frontend: http://localhost:8080
+VITE_API_BASE_URL=http://localhost:8007
+```
+
+`docker-compose.yml` contains:
+
+```yaml
+ports:
+  - "8007:8000"
+```
+
+Also fixed:
+- backend `BenchmarkRequest` now accepts `configuration="guardrailed"`
+- frontend API errors are normalized to strings before rendering
+- FastAPI 422 validation arrays no longer crash React with error #31
+- all benchmark start/progress/result fetches use shared safe JSON/error handling

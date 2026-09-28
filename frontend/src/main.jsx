@@ -1,25 +1,78 @@
 import React,{useEffect,useMemo,useRef,useState}from"react";
 import{createRoot}from"react-dom/client";
 import"./styles.css";
-const API=import.meta.env.VITE_API_BASE_URL||"http://localhost:8000";
+const API=import.meta.env.VITE_API_BASE_URL||"http://localhost:8007";
 const pct=v=>`${Math.round((v||0)*100)}%`,num=(v,d=1)=>Number(v||0).toFixed(d);
 const fmt=s=>{s=Math.floor(Number(s||0));return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`};
+function errorMessage(detail,status){
+ const d=detail?.detail ?? detail;
+ if(Array.isArray(d)){
+   return d.map(x=>{
+     if(typeof x==="string")return x;
+     if(x&&typeof x==="object")return x.msg||JSON.stringify(x);
+     return String(x);
+   }).join(" | ");
+ }
+ if(d&&typeof d==="object")return JSON.stringify(d);
+ return String(d||`Request failed${status?` (${status})`:""}`);
+}
+async function readJson(r){
+ const body=await r.json().catch(()=>null);
+ if(!r.ok)throw new Error(errorMessage(body,r.status));
+ return body;
+}
 function Pill({ok,children}){return <span className={`pill ${ok?"ok":"bad"}`}>{children}</span>}
 function Metric({label,value,hint}){return <div className="metric"><div className="metric-label">{label}</div><div className="metric-value">{value}</div><div className="metric-hint">{hint}</div></div>}
 
 function App(){
  const[dataset,setDataset]=useState(null),[history,setHistory]=useState([]),[result,setResult]=useState(null),[selectedRun,setSelectedRun]=useState(null);
- const[taskCount,setTaskCount]=useState(5),[repeats,setRepeats]=useState(1),[configuration,setConfiguration]=useState("tools"),[provider,setProvider]=useState("openai");
+ const[taskCount,setTaskCount]=useState(5),[repeats,setRepeats]=useState(1),[configuration,setConfiguration]=useState("guardrailed"),[provider,setProvider]=useState("openai");
  const[loading,setLoading]=useState(false),[job,setJob]=useState(null),[error,setError]=useState("");const poll=useRef(null);
 
- const refresh=async()=>{try{const[d,h]=await Promise.all([fetch(`${API}/api/dataset/status`).then(r=>r.json()),fetch(`${API}/api/history`).then(r=>r.json())]);setDataset(d);setHistory(Array.isArray(h)?h:[])}catch(e){setError(String(e))}};
+ const refresh=async()=>{try{
+   const[d,h]=await Promise.all([
+     fetch(`${API}/api/dataset/status`).then(readJson),
+     fetch(`${API}/api/history`).then(readJson)
+   ]);
+   setDataset(d);
+   setHistory(Array.isArray(h)?h:[]);
+ }catch(e){setError(e?.message||String(e))}};
  useEffect(()=>{refresh();return()=>poll.current&&clearInterval(poll.current)},[]);
 
- const pollJob=id=>{poll.current=setInterval(async()=>{try{const r=await fetch(`${API}/api/benchmark/jobs/${id}`),j=await r.json();if(!r.ok)throw new Error(j.detail);setJob(j);
-  if(j.status==="completed"){clearInterval(poll.current);const rr=await fetch(`${API}/api/benchmark/jobs/${id}/result`),b=await rr.json();if(!rr.ok)throw new Error(b.detail);setResult(b);setSelectedRun(b.runs?.[0]||null);setLoading(false);refresh()}
-  if(j.status==="failed"){clearInterval(poll.current);setError(j.error||"Failed");setLoading(false)}}catch(e){clearInterval(poll.current);setError(e.message);setLoading(false)}},1000)};
+ const pollJob=id=>{poll.current=setInterval(async()=>{try{
+   const j=await fetch(`${API}/api/benchmark/jobs/${id}`).then(readJson);
+   setJob(j);
+   if(j.status==="completed"){
+     clearInterval(poll.current);
+     const b=await fetch(`${API}/api/benchmark/jobs/${id}/result`).then(readJson);
+     setResult(b);
+     setSelectedRun(b.runs?.[0]||null);
+     setLoading(false);
+     refresh();
+   }
+   if(j.status==="failed"){
+     clearInterval(poll.current);
+     setError(errorMessage(j.error||"Failed"));
+     setLoading(false);
+   }
+ }catch(e){
+   clearInterval(poll.current);
+   setError(e?.message||String(e));
+   setLoading(false);
+ }},1000)};
 
- const run=async()=>{setLoading(true);setResult(null);setError("");const r=await fetch(`${API}/api/benchmark/start`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task_count:+taskCount,repeats:+repeats,configuration,provider})});const b=await r.json();if(!r.ok){setError(b.detail);setLoading(false);return}setJob({job_id:b.job_id,status:"queued",completed_runs:0,total_runs:+taskCount*+repeats,progress_pct:0,logs:[]});pollJob(b.job_id)};
+ const run=async()=>{setLoading(true);setResult(null);setError("");try{
+   const b=await fetch(`${API}/api/benchmark/start`,{
+     method:"POST",
+     headers:{"Content-Type":"application/json"},
+     body:JSON.stringify({task_count:+taskCount,repeats:+repeats,configuration,provider})
+   }).then(readJson);
+   setJob({job_id:b.job_id,status:"queued",completed_runs:0,total_runs:+taskCount*+repeats,progress_pct:0,logs:[]});
+   pollJob(b.job_id);
+ }catch(e){
+   setError(e?.message||String(e));
+   setLoading(false);
+ }};
  const s=result?.summary,failures=useMemo(()=>result?.runs?.filter(r=>r.failure_reasons?.length)||[],[result]);
 
  return <div className="app"><aside className="sidebar">
@@ -31,14 +84,15 @@ function App(){
  <main><header><div><div className="eyebrow">GENAI / AGENTIC AI</div><h1>Deep Evaluation Lab</h1><p>Real tool calling with strict output budgets, routed policies and routed tool sets.</p></div><div className="header-badge">τ²-bench Retail</div></header>
 
  <section className="budget-card">
-  <div><strong>Default agent controls</strong><span>Per-turn output ≤ 220 · Per-run output ≤ 650 · Max 9 agent turns · Routed policy/tools</span></div>
-  <div className="budget-tip">Goal: keep output small while preserving tool-use quality.</div>
+  <div><strong>Default agent controls</strong><span>Per-turn output cap ≤ 1200 · Per-run output cap ≤ 4000 · Max 9 agent turns · Routed policy/tools</span></div>
+  <div className="budget-tip">Goal: production-style agent: LLM decides; deterministic guardrails enforce safety and grounded tool use.</div>
  </section>
 
+ <section className="budget-card"><div><strong>Production-style guardrails</strong><span>Free Agent = model chooses freely. Guardrailed Agent = same model, but invalid IDs, missing confirmation and unsafe side effects are rejected and repaired.</span></div><div className="budget-tip">No gold trajectory is hard-coded.</div></section>
  <section className="panel"><div className="panel-head"><div><h2>Benchmark configuration</h2><p>Start small, then scale after token use looks reasonable.</p></div></div><div className="controls">
   <label>Tasks<input type="number" min="1" max="114" value={taskCount} onChange={e=>setTaskCount(e.target.value)}/></label>
   <label>Repeats / task<input type="number" min="1" max="10" value={repeats} onChange={e=>setRepeats(e.target.value)}/></label>
-  <label>Agent setup<select value={configuration} onChange={e=>setConfiguration(e.target.value)}><option value="baseline">Baseline</option><option value="tools">LLM + Tools</option><option value="reflection">Tools + Reflection</option><option value="multi_agent">Multi-Agent</option></select></label>
+  <label>Agent setup<select value={configuration} onChange={e=>setConfiguration(e.target.value)}><option value="tools">Free Agent — LLM + Tools</option><option value="guardrailed">Guardrailed Agent — Production Style</option></select></label>
   <label>Provider<select value={provider} onChange={e=>setProvider(e.target.value)}><option value="openai">OpenAI</option><option value="heuristic">Heuristic smoke test</option></select></label>
   <button disabled={loading||!dataset?.ready} onClick={run}>{loading?"Running…":"Run benchmark"}</button>
  </div></section>{error&&<div className="error">{error}</div>}
@@ -72,13 +126,16 @@ function App(){
    <Metric label="Tool errors / run" value={num(s.tool_errors_per_run,2)} hint="Rejected by environment"/>
   </section>
 
-  <div className="section-title"><h2>3. Token Budget & Efficiency</h2><p>This section makes the cost controls explicit.</p></div><section className="metrics-grid">
+  <div className="section-title"><h2>3. Token Budget & Efficiency</h2><p>This section makes the cost controls explicit. Reasoning tokens are included in the output-token budget, so caps provide headroom rather than expected usage.</p></div><section className="metrics-grid">
    <Metric label="Input / run" value={num(s.mean_input_tokens,0)} hint={`P95 ${num(s.p95_input_tokens,0)}`}/>
-   <Metric label="Output / run" value={num(s.mean_output_tokens,0)} hint={`P95 ${num(s.p95_output_tokens,0)} · hard cap 180`}/>
+   <Metric label="Output / run" value={num(s.mean_output_tokens,0)} hint={`P95 ${num(s.p95_output_tokens,0)} · cap is headroom, not target usage`}/>
    <Metric label="Output budget used" value={pct(s.mean_output_budget_used_pct)} hint="Average fraction of the 180-token run cap"/>
    <Metric label="Total input" value={s.total_input_tokens} hint={`Cached ${s.total_cached_input_tokens}`}/>
    <Metric label="Total output" value={s.total_output_tokens} hint="All runs combined"/>
-   <Metric label="LLM turns / run" value={num(s.mean_llm_turns,1)} hint="Max 7"/>
+   <Metric label="LLM turns / run" value={num(s.mean_llm_turns,1)} hint="Max 9"/>
+   <Metric label="User-sim turns / run" value={num(s.mean_user_simulator_turns,1)} hint="Deterministic confirmation turns"/>
+   <Metric label="Reasoning tokens / run" value={num(s.mean_reasoning_tokens,0)} hint="Reported by model usage when available"/>
+   <Metric label="Guardrail rejects / run" value={num(s.mean_guardrail_rejections,2)} hint="Invalid/ungrounded calls blocked before execution"/>
    <Metric label="Tools exposed / run" value={num(s.mean_routed_tool_count,1)} hint="Routed subset, not all tools"/>
    <Metric label="Policy chars / run" value={num(s.mean_routed_policy_chars,0)} hint="Routed policy only"/>
    <Metric label="Mean latency" value={`${num(s.mean_latency_ms,0)} ms`} hint={`P95 ${num(s.p95_latency_ms,0)} ms`}/>
@@ -89,8 +146,8 @@ function App(){
    <div className="table-wrap"><table><thead><tr><th>Task</th><th>Outcome</th><th>Tool F1</th><th>Args</th><th>Tokens In/Out</th><th>Budget</th></tr></thead><tbody>{result.runs.map(r=><tr key={r.run_id} onClick={()=>setSelectedRun(r)} className={selectedRun?.run_id===r.run_id?"selected":""}><td>{r.task_id}</td><td><Pill ok={r.success}>{r.success?"Success":"Failed"}</Pill></td><td>{pct(r.tool_f1)}</td><td>{pct(r.argument_accuracy)}</td><td>{r.input_tokens}/{r.output_tokens}</td><td>{pct(r.output_budget_used_pct)}</td></tr>)}</tbody></table></div></div>
 
    <div className="panel"><div className="panel-head"><div><h2>Run inspector</h2><p>Tool path, token budget and final result.</p></div></div>{selectedRun&&<>
-    <div className="trace-meta"><Pill ok={selectedRun.success}>{selectedRun.success?"SUCCESS":"FAILED"}</Pill><span>Task {selectedRun.task_id}</span><span>{selectedRun.llm_turns} LLM turns</span></div>
-    <div className="run-budget-grid"><div><small>INPUT</small><b>{selectedRun.input_tokens}</b></div><div><small>OUTPUT</small><b>{selectedRun.output_tokens}</b></div><div><small>OUTPUT CAP</small><b>{selectedRun.output_budget_max}</b></div><div><small>USED</small><b>{pct(selectedRun.output_budget_used_pct)}</b></div><div><small>TOOLS EXPOSED</small><b>{selectedRun.routed_tool_count}</b></div></div>
+    <div className="trace-meta"><Pill ok={selectedRun.success}>{selectedRun.success?"SUCCESS":"FAILED"}</Pill><span>Task {selectedRun.task_id}</span><span>{selectedRun.llm_turns} LLM turns</span><span>{selectedRun.user_simulator_turns||0} user-sim turns</span></div>
+    <div className="run-budget-grid"><div><small>INPUT</small><b>{selectedRun.input_tokens}</b></div><div><small>OUTPUT</small><b>{selectedRun.output_tokens}</b></div><div><small>REASONING</small><b>{selectedRun.reasoning_tokens||0}</b></div><div><small>OUTPUT CAP</small><b>{selectedRun.output_budget_max}</b></div><div><small>USED</small><b>{pct(selectedRun.output_budget_used_pct)}</b></div><div><small>TOOLS EXPOSED</small><b>{selectedRun.routed_tool_count}</b></div><div><small>GUARDRAIL REJECTS</small><b>{selectedRun.guardrail_rejection_count||0}</b></div></div>
     <div className="compare"><div><small>REFERENCE TOOLS</small>{selectedRun.expected_tools.map((x,i)=><code key={i}>{x}</code>)}</div><div><small>ACTUAL TOOLS</small>{selectedRun.actual_tools.length?selectedRun.actual_tools.map((x,i)=><code key={i}>{x}</code>):<span>None</span>}</div></div>
     {selectedRun.failure_reasons?.length>0&&<div className="reason-box">{selectedRun.failure_reasons.map(x=><span key={x}>{x.replaceAll("_"," ")}</span>)}</div>}
     <div className="timeline">{selectedRun.trace.map((t,i)=><div className="trace-step" key={i}><div className="dot"></div><div><small>{String(t.type).toUpperCase()}</small><b>{t.name||t.message||`Step ${i+1}`}</b>{t.arguments&&<pre>{JSON.stringify(t.arguments,null,2)}</pre>}{t.result&&<pre>{JSON.stringify(t.result,null,2)}</pre>}</div></div>)}</div>
