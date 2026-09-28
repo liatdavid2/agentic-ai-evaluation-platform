@@ -134,3 +134,36 @@ OUTPUT_COST_PER_1M=...
 ```
 
 When unset, dollar metrics remain zero instead of pretending an outdated price is correct.
+
+
+## v6 trajectory fix
+
+This update targets premature agent termination after authentication.
+
+Changes:
+- `MAX_AGENT_STEPS`: 7 -> 9
+- `MAX_OUTPUT_TOKENS_PER_TURN`: 80 -> 220
+- `MAX_OUTPUT_TOKENS_PER_RUN`: 180 -> 650
+- `MAX_TOOL_RESULT_CHARS`: 2500 -> 1800
+- Added `REASONING_EFFORT=low`
+- Action tasks use `tool_choice="required"` until a successful mutating action occurs
+- Authentication is explicitly not treated as task completion
+- The system prompt tells the agent to keep resolving DB information through tools instead of asking the user for information tools can provide
+- UI banner now reflects the real limits
+
+
+## v7 function-call orchestration fix
+
+This version fixes the OpenAI Responses API error:
+
+```text
+No tool output found for function call ...
+```
+
+Changes:
+- `parallel_tool_calls=False`
+- every returned `function_call` now receives a matching `function_call_output`
+- keeps the trajectory sequential when possible
+- preserves v6 behavior that forces action tasks to continue using tools until a successful action is performed
+
+This fix removes orchestration-level 400 errors. It does **not** guarantee 100% benchmark success; remaining failures can still come from wrong tool selection, wrong arguments, insufficient routing, policy requirements, or tasks that need a user-simulator/confirmation turn.

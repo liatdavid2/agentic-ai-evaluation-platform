@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 from .base import AgentProvider
 from app.dataset import instruction
 from app.tooling import RetailToolExecutor, filtered_schemas
-from app.routing import policy_for_task, tool_names_for_task
+from app.routing import policy_for_task, tool_names_for_task, detect_intents
 
 
 class OpenAIProvider(AgentProvider):
@@ -14,10 +14,7 @@ class OpenAIProvider(AgentProvider):
         self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
-        # Runtime
-        self.max_steps = int(os.getenv("MAX_AGENT_STEPS", "7"))
-
-        # Output budgets
+        self.max_steps = int(os.getenv("MAX_AGENT_STEPS", "9"))
         self.max_output_per_turn = int(
             os.getenv("MAX_OUTPUT_TOKENS_PER_TURN", "220")
         )
@@ -25,7 +22,6 @@ class OpenAIProvider(AgentProvider):
             os.getenv("MAX_OUTPUT_TOKENS_PER_RUN", "650")
         )
 
-        # Prompt / context limits
         self.max_task_chars = int(
             os.getenv("MAX_TASK_INPUT_CHARS", "1800")
         )
@@ -36,7 +32,6 @@ class OpenAIProvider(AgentProvider):
             os.getenv("MAX_TOOL_RESULT_CHARS", "1800")
         )
 
-        # Keep reasoning low so the model reaches tool calls quickly
         self.reasoning_effort = os.getenv(
             "REASONING_EFFORT",
             "low"
@@ -47,37 +42,25 @@ class OpenAIProvider(AgentProvider):
 
         input_tokens = (
             int(getattr(usage, "input_tokens", 0) or 0)
-            if usage
-            else 0
+            if usage else 0
         )
-
         output_tokens = (
             int(getattr(usage, "output_tokens", 0) or 0)
-            if usage
-            else 0
+            if usage else 0
         )
 
         details = (
             getattr(usage, "input_tokens_details", None)
-            if usage
-            else None
+            if usage else None
         )
-
         cached_tokens = (
             int(getattr(details, "cached_tokens", 0) or 0)
-            if details
-            else 0
+            if details else 0
         )
 
         return input_tokens, output_tokens, cached_tokens
 
-    async def run(
-        self,
-        task,
-        configuration,
-        policy,
-        db=None
-    ):
+    async def run(self, task, configuration, policy, db=None):
         executor = RetailToolExecutor(
             db or {
                 "products": {},
@@ -96,13 +79,33 @@ class OpenAIProvider(AgentProvider):
         tool_names = tool_names_for_task(task_text)
         tools = filtered_schemas(tool_names)
 
+        intents = detect_intents(task_text)
+
+        action_intents = {
+            "cancel",
+            "modify_items",
+            "modify_address",
+            "modify_payment",
+            "return",
+            "exchange",
+        }
+
+        requires_action = any(
+            intent in action_intents
+            for intent in intents
+        )
+
         system = (
             "You are a concise retail support agent under evaluation. "
             "Use tools for all database facts. "
             "Do not narrate reasoning. "
             "Make at most one tool call per turn. "
-            "Prefer calling a tool when information or an action depends "
-            "on the retail database. "
+            "Continue using tools until the user's request is actually completed. "
+            "Authentication alone is never task completion. "
+            "Do not stop after identifying the user. "
+            "Use tool results to resolve order ids, product variants, prices, "
+            "availability, and payment details whenever possible. "
+            "Do not ask the user for information that can be obtained from tools. "
             "Keep final answers very short. "
             "Follow the policy below.\n\n"
             + routed_policy
@@ -120,7 +123,6 @@ class OpenAIProvider(AgentProvider):
         ]
 
         previous_response_id = None
-
         trace = []
 
         input_tokens = 0
@@ -149,19 +151,39 @@ class OpenAIProvider(AgentProvider):
                 remaining,
             )
 
+            successful_mutation = any(
+                call.get("name") in {
+                    "cancel_pending_order",
+                    "modify_pending_order_items",
+                    "modify_pending_order_address",
+                    "modify_pending_order_payment",
+                    "return_delivered_order_items",
+                    "exchange_delivered_order_items",
+                    "modify_user_address",
+                }
+                and call.get("status") == "ok"
+                for call in executor.calls
+            )
+
             kwargs = {
                 "model": self.model,
                 "input": input_items,
                 "tools": tools,
                 "max_output_tokens": turn_budget,
-
-                # Important:
-                # reduce reasoning overhead so the model
-                # reaches function/tool calls faster.
                 "reasoning": {
                     "effort": self.reasoning_effort
                 },
+
+                # Keep orchestration sequential. This reduces the chance that
+                # multiple pending function calls must be satisfied at once.
+                "parallel_tool_calls": False,
             }
+
+            # Prevent premature final answers on action tasks.
+            if requires_action and not successful_mutation:
+                kwargs["tool_choice"] = "required"
+            else:
+                kwargs["tool_choice"] = "auto"
 
             if previous_response_id:
                 kwargs["previous_response_id"] = (
@@ -204,54 +226,57 @@ class OpenAIProvider(AgentProvider):
 
                 break
 
-            # Policy: execute only one tool per turn.
-            call = calls[0]
+            # Satisfy every function call returned by the API.
+            # Even with parallel_tool_calls=False, this is defensive and prevents:
+            # "No tool output found for function call ..."
+            next_input_items = []
 
-            try:
-                args = json.loads(
-                    call.arguments or "{}"
+            for call in calls:
+                try:
+                    args = json.loads(
+                        call.arguments or "{}"
+                    )
+                except Exception:
+                    args = {}
+
+                trace.append(
+                    {
+                        "step": step,
+                        "type": "tool_call",
+                        "name": call.name,
+                        "arguments": args,
+                    }
                 )
-            except Exception:
-                args = {}
 
-            trace.append(
-                {
-                    "step": step,
-                    "type": "tool_call",
-                    "name": call.name,
-                    "arguments": args,
-                }
-            )
+                result = executor.execute(
+                    call.name,
+                    args
+                )
 
-            result = executor.execute(
-                call.name,
-                args
-            )
+                trace.append(
+                    {
+                        "step": step,
+                        "type": "tool_result",
+                        "name": call.name,
+                        "result": result,
+                    }
+                )
 
-            trace.append(
-                {
-                    "step": step,
-                    "type": "tool_result",
-                    "name": call.name,
-                    "result": result,
-                }
-            )
+                compact = json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )[:self.max_tool_result_chars]
 
-            compact = json.dumps(
-                result,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )[:self.max_tool_result_chars]
+                next_input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": compact,
+                    }
+                )
 
-            # Next turn gets only the tool result.
-            # previous_response_id keeps the model-side context.
-            input_items = [
-                {
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": compact,
-                }
-            ]
+            input_items = next_input_items
 
         else:
             termination_reason = (
@@ -263,8 +288,7 @@ class OpenAIProvider(AgentProvider):
                 {
                     k: v
                     for k, v in call.items()
-                    if k
-                    in {
+                    if k in {
                         "name",
                         "arguments",
                         "status",
@@ -288,13 +312,10 @@ class OpenAIProvider(AgentProvider):
             "token_budget": {
                 "max_output_per_turn":
                     self.max_output_per_turn,
-
                 "max_output_per_run":
                     self.max_output_per_run,
-
                 "output_used":
                     output_tokens,
-
                 "output_remaining":
                     max(
                         0,
@@ -308,7 +329,6 @@ class OpenAIProvider(AgentProvider):
                 "tool_names": tool_names,
                 "policy_chars":
                     len(routed_policy),
-
                 "task_chars":
                     len(task_text),
             },

@@ -31,7 +31,7 @@ function App(){
  <main><header><div><div className="eyebrow">GENAI / AGENTIC AI</div><h1>Deep Evaluation Lab</h1><p>Real tool calling with strict output budgets, routed policies and routed tool sets.</p></div><div className="header-badge">τ²-bench Retail</div></header>
 
  <section className="budget-card">
-  <div><strong>Default token controls</strong><span>Per-turn output ≤ 80 · Per-run output ≤ 180 · Max 7 agent turns · Routed policy/tools</span></div>
+  <div><strong>Default agent controls</strong><span>Per-turn output ≤ 220 · Per-run output ≤ 650 · Max 9 agent turns · Routed policy/tools</span></div>
   <div className="budget-tip">Goal: keep output small while preserving tool-use quality.</div>
  </section>
 
