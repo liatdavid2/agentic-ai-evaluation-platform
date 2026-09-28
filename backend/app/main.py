@@ -89,7 +89,7 @@ def export_csv(benchmark_id:str):
     if not b:raise HTTPException(404,"Benchmark not found")
     rows=b["runs"];fields=[
         "run_id","task_id","repeat","configuration","provider","success","observable_policy_compliant",
-        "tool_precision","tool_recall","tool_f1","argument_accuracy","exact_action_recall","communication_recall",
+        "final_action_score","final_action_match","tool_precision","tool_recall","tool_f1","argument_accuracy","exact_action_recall","communication_recall",
         "invalid_tool_calls","tool_execution_errors","redundant_tool_calls","tool_call_count","step_count","llm_turns","reasoning_tokens",
         "latency_ms","input_tokens","cached_input_tokens","output_tokens","tokens","output_budget_max","output_budget_used_pct","routed_tool_count","routed_policy_chars","estimated_cost_usd",
         "termination_reason","failure_reasons"]

@@ -70,3 +70,50 @@ Agent setup = Clean LLM + Tools Baseline
 
 The goal of this version is to establish a trustworthy baseline before adding
 any guardrails or user simulation as separate ablations.
+
+
+## v13 — outcome-based evaluator
+
+The agent itself is unchanged from v12.
+
+The evaluator now separates **task outcome** from **trajectory similarity**.
+
+### Task Success
+
+For action tasks:
+
+```text
+correct final mutating action/effect
++ all required communicate_info
++ completed run
+```
+
+For informational tasks:
+
+```text
+required communicate_info
++ completed run
+```
+
+Task Success no longer requires the entire sequence of lookup tools to match the
+reference trajectory.
+
+### Still reported separately
+
+- Tool Precision
+- Tool Recall
+- Tool F1
+- Argument Accuracy
+- Exact Action Recall
+- Tool errors
+- Policy diagnostics
+
+### New metric
+
+`Final Action Score`
+
+This measures how closely the successful mutating action matches the expected
+side effect. It ignores lookup/authentication trajectory differences.
+
+This makes it possible for two valid trajectories to receive the same successful
+task outcome while still exposing their different tool-use behavior.

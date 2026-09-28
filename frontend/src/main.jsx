@@ -254,15 +254,16 @@ function App(){
    {s&&<>
     <div className="section-title"><h2>1. Outcome & Reliability</h2></div>
     <section className="metrics-grid">
-     <Metric label="Task success" value={pct(s.task_success_rate)} hint="Derived by evaluator"/>
+     <Metric label="Task success" value={pct(s.task_success_rate)} hint="Final action outcome + required communication"/>
      <Metric label={`pass@${s.repeats}`} value={pct(s.pass_at_k)} hint="At least one success"/>
      <Metric label={`pass^${s.repeats}`} value={pct(s.pass_power_k)} hint="Every repeat succeeds"/>
      <Metric label="Repeat consistency" value={pct(s.repeat_consistency)} hint={s.repeats===1?"Not meaningful with one repeat":"Stable outcomes"}/>
      <Metric label="Observable policy" value={pct(s.observable_policy_compliance_rate)} hint="Trace-checkable rules"/>
     </section>
 
-    <div className="section-title"><h2>2. Tool & Action Quality</h2></div>
+    <div className="section-title"><h2>2. Tool & Action Quality</h2><p>Final Action measures outcome. Tool/argument metrics diagnose how the agent got there.</p></div>
     <section className="metrics-grid">
+     <Metric label="Final action score" value={pct(s.mean_final_action_score)} hint="Expected side effect matched, independent of lookup path"/>
      <Metric label="Tool precision" value={pct(s.mean_tool_precision)} hint="Expected among actual"/>
      <Metric label="Tool recall" value={pct(s.mean_tool_recall)} hint="Reference tools recovered"/>
      <Metric label="Tool F1" value={pct(s.mean_tool_f1)} hint="Balanced tool score"/>
@@ -296,11 +297,12 @@ function App(){
       </div>
       <div className="table-wrap">
        <table>
-        <thead><tr><th>Task</th><th>Outcome</th><th>Tool F1</th><th>Args</th><th>Tokens In/Out</th><th>Termination</th></tr></thead>
+        <thead><tr><th>Task</th><th>Outcome</th><th>Final Action</th><th>Tool F1</th><th>Args</th><th>Tokens In/Out</th><th>Termination</th></tr></thead>
         <tbody>{result.runs.map(r=>
          <tr key={r.run_id} onClick={()=>setSelectedRun(r)} className={selectedRun?.run_id===r.run_id?"selected":""}>
           <td>{r.task_id}</td>
           <td><Pill ok={r.success}>{r.success?"Success":"Failed"}</Pill></td>
+          <td>{pct(r.final_action_score)}</td>
           <td>{pct(r.tool_f1)}</td>
           <td>{pct(r.argument_accuracy)}</td>
           <td>{r.input_tokens}/{r.output_tokens}</td>
