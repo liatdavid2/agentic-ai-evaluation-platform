@@ -8,8 +8,7 @@ class BenchmarkRequest(BaseModel):
 
     configuration: Literal[
         "tools",
-        "guardrailed",
-    ] = "guardrailed"
+    ] = "tools"
 
     provider: Literal[
         "heuristic",
