@@ -1,81 +1,79 @@
-import re
+import os
+from openai import AsyncOpenAI
 
 
-class ScriptedUserSimulator:
+class LLMUserSimulator:
     """
-    Lightweight deterministic user simulator.
+    LLM-based user simulator for multi-turn benchmark execution.
 
-    It does not call another LLM, so it does not add API token cost.
-    It is intended to unlock multi-turn benchmark flows such as explicit
-    confirmation before cancel/return/exchange/modify actions.
-
-    The simulator uses the original task instructions as its script source.
+    The simulator receives the task's user instructions as its private script.
+    It plays only the user, follows conditional instructions in the scenario,
+    and returns __END__ when the conversation should end.
     """
 
-    def __init__(self, task_text: str, max_turns: int = 3):
-        self.task_text = task_text or ""
-        self.max_turns = max_turns
+    def __init__(self, task_text: str):
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        configured = os.getenv("USER_SIM_MODEL", "").strip()
+        if configured in {"", "${OPENAI_MODEL}"}:
+            configured = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+        self.model = configured
+        self.max_turns = int(os.getenv("USER_SIM_MAX_TURNS", "6"))
+        self.max_output_tokens = int(os.getenv("USER_SIM_MAX_OUTPUT_TOKENS", "180"))
+        self.task_text = task_text
         self.turns = 0
+        self.previous_response_id = None
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.reasoning_tokens = 0
 
-    def can_respond(self) -> bool:
-        return self.turns < self.max_turns
+    def _usage(self, resp):
+        u = getattr(resp, "usage", None)
+        inp = int(getattr(u, "input_tokens", 0) or 0) if u else 0
+        out = int(getattr(u, "output_tokens", 0) or 0) if u else 0
+        od = getattr(u, "output_tokens_details", None) if u else None
+        reasoning = int(getattr(od, "reasoning_tokens", 0) or 0) if od else 0
+        return inp, out, reasoning
 
-    def _looks_like_confirmation_request(self, text: str) -> bool:
-        t = (text or "").lower()
-        markers = [
-            "confirm",
-            "confirmation",
-            "do you want me to",
-            "would you like me to",
-            "shall i",
-            "should i proceed",
-            "may i proceed",
-            "proceed with",
-            "is that okay",
-            "is this correct",
-        ]
-        return any(m in t for m in markers)
+    async def reply(self, agent_message: str) -> str:
+        if self.turns >= self.max_turns:
+            return "__END__"
 
-    def _extract_scripted_confirmation(self) -> str | None:
-        """
-        Best-effort extraction of benchmark-authored conditional behavior.
-        Examples:
-          - 'If the agent asks for confirmation, ...'
-          - 'When asked to confirm, ...'
-        We preserve the task wording when a short directive can be extracted.
-        """
-        text = self.task_text
+        system = (
+            "You are simulating the USER in a retail customer-support benchmark. "
+            "Follow the private scenario instructions exactly, including any conditional "
+            "behavior such as changing your mind after a confirmation question. "
+            "Do not act like the support agent. Do not use tools. Do not invent facts "
+            "that the scenario does not give you. Keep replies concise and natural. "
+            "If the user's goal is satisfied, the agent has clearly finished, or there "
+            "is nothing further the scripted user should say, reply with exactly __END__.\n\n"
+            "PRIVATE USER SCENARIO:\n"
+            + self.task_text
+        )
 
-        patterns = [
-            r"if (?:the )?agent asks? (?:you )?(?:for )?confirmation[,:\s]+(.+?)(?:\n|$)",
-            r"when asked (?:for|to) confirm[^,:\n]*[,:\s]+(.+?)(?:\n|$)",
-            r"if asked (?:for|to) confirm[^,:\n]*[,:\s]+(.+?)(?:\n|$)",
-        ]
+        kwargs = {
+            "model": self.model,
+            "input": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"Support agent said:\n{agent_message}\n\nReply as the user."},
+            ],
+            "max_output_tokens": self.max_output_tokens,
+            "reasoning": {"effort": "low"},
+        }
 
-        for pat in patterns:
-            m = re.search(pat, text, flags=re.I)
-            if m:
-                directive = m.group(1).strip(" .")
-                if directive and len(directive) <= 300:
-                    # Convert common imperative descriptions into a user reply.
-                    low = directive.lower()
-                    if low.startswith(("say ", "respond ", "reply ")):
-                        directive = re.sub(r"^(say|respond|reply)\s+", "", directive, flags=re.I)
-                    return directive
+        if self.previous_response_id:
+            kwargs["previous_response_id"] = self.previous_response_id
+            kwargs["input"] = [
+                {"role": "user", "content": f"Support agent said:\n{agent_message}\n\nReply as the user."}
+            ]
 
-        return None
+        resp = await self.client.responses.create(**kwargs)
+        self.previous_response_id = resp.id
+        self.turns += 1
 
-    def respond(self, agent_text: str) -> str | None:
-        if not self.can_respond():
-            return None
+        i, o, r = self._usage(resp)
+        self.input_tokens += i
+        self.output_tokens += o
+        self.reasoning_tokens += r
 
-        if self._looks_like_confirmation_request(agent_text):
-            self.turns += 1
-            scripted = self._extract_scripted_confirmation()
-            if scripted:
-                return scripted
-            return "Yes, I confirm. Please proceed."
-
-        # Do not invent answers to database questions. Those should be resolved
-        # through tools; returning None lets the evaluator terminate the run.
-        return None
+        text = (getattr(resp, "output_text", "") or "").strip()
+        return text or "__END__"

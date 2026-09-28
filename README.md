@@ -1,119 +1,89 @@
-# Agentic AI Evaluation Platform — v12 Clean Baseline
+# Agentic AI Evaluation Platform — v14 Paper-Style
 
-This version intentionally removes the orchestration layers that were added in
-later experiments and returns to the simplest meaningful agent baseline:
+This version changes the evaluation architecture to match the core benchmark
+idea more closely:
 
 ```text
-Task
-  -> OpenAI LLM
-  -> real Retail tools
-  -> db.json
-  -> LLM
-  -> ...
-  -> final answer
-  -> evaluator
+LLM User Simulator
+        ↕
+     LLM Agent
+        ↕
+     Real Tools
+        ↕
+      db.json
+        ↓
+Final DB State Evaluator
 ```
 
-## Removed
+## What changed
 
-- User Simulator
-- Guardrail Engine
-- state machine / phase orchestration
-- forced mutation loops
-- confirmation gate in code
-- grounded-ID blocking
-- repair loops
-- task-specific trajectory forcing
+### 1. LLM user simulator
+The user is now simulated by a second LLM conversation.
 
-## Kept
+It receives the task scenario as a private script and:
+- answers clarification / confirmation questions
+- follows conditional task instructions
+- can change its mind when the task script says to
+- returns `__END__` when the user conversation is over
 
-- real OpenAI function calling
-- real Retail tool execution against a fresh copy of `db.json`
-- all 14 Retail tools
-- full Retail policy in the model context
-- `parallel_tool_calls=False`
-- matching `function_call_output` for every returned function call
-- input/output/cached/reasoning token tracking
-- high enough output headroom for reasoning models
-- explicit incomplete/max-output detection
-- benchmark metrics and run inspector
-- live progress
-- SQLite history
-- CSV export
+This is separate from the evaluated agent.
 
-## Network / ports
+### 2. Final-state evaluator
+Task Success is now based on the final environment state rather than requiring
+the agent's lookup trajectory to match the reference.
 
-This project always uses:
+The evaluator:
+1. clones the initial `db.json`
+2. replays the gold **mutating actions** on one copy
+3. uses the agent's actual final DB as the second copy
+4. compares only the user/order entities that the task is supposed to mutate
+5. combines final-state match with required `communicate_info`
+
+Lookup/authentication calls remain diagnostic only.
+
+### 3. Trajectory diagnostics remain
+The UI still reports:
+- Tool Precision / Recall / F1
+- Argument Accuracy
+- Exact Action Recall
+- Communication Recall
+- Tool errors
+- Tokens / latency
+
+These explain how the agent behaved but do not define the final DB outcome.
+
+### 4. Better state mutation
+Retail mutating tools now leave explicit state changes that can be compared:
+- item modification updates order items
+- exchange stores an exchange request
+- return stores a return request
+- cancellation/address/payment/user-address mutations update their state
+
+### 5. Separate token accounting
+The UI reports both:
+- evaluated Agent tokens
+- User Simulator tokens
+
+## Ports
 
 ```text
 Backend host: http://localhost:8007
-Backend container port: 8000
+Backend container: 8000
 Frontend: http://localhost:8080
 VITE_API_BASE_URL=http://localhost:8007
 ```
 
-Docker mapping:
-
-```yaml
-ports:
-  - "8007:8000"
-```
-
-## Recommended first run
+## Suggested first run
 
 ```text
 Tasks = 5
 Repeats = 1
 Provider = OpenAI
-Agent setup = Clean LLM + Tools Baseline
 ```
 
-The goal of this version is to establish a trustworthy baseline before adding
-any guardrails or user simulation as separate ablations.
-
-
-## v13 — outcome-based evaluator
-
-The agent itself is unchanged from v12.
-
-The evaluator now separates **task outcome** from **trajectory similarity**.
-
-### Task Success
-
-For action tasks:
-
-```text
-correct final mutating action/effect
-+ all required communicate_info
-+ completed run
-```
-
-For informational tasks:
-
-```text
-required communicate_info
-+ completed run
-```
-
-Task Success no longer requires the entire sequence of lookup tools to match the
-reference trajectory.
-
-### Still reported separately
-
-- Tool Precision
-- Tool Recall
-- Tool F1
-- Argument Accuracy
-- Exact Action Recall
-- Tool errors
-- Policy diagnostics
-
-### New metric
-
-`Final Action Score`
-
-This measures how closely the successful mutating action matches the expected
-side effect. It ignores lookup/authentication trajectory differences.
-
-This makes it possible for two valid trajectories to receive the same successful
-task outcome while still exposing their different tool-use behavior.
+Then inspect:
+- Task Success
+- Final State Match
+- User-sim turns
+- Tool F1 / Argument Accuracy
+- Expected Final State vs Actual Final State

@@ -111,13 +111,32 @@ class RetailToolExecutor:
         if o.get("status")!="pending":return {"ok":False,"error":"Order is not pending"}
         if len(item_ids)!=len(new_item_ids):return {"ok":False,"error":"Item lists length mismatch"}
         by_id={x["item_id"]:x for x in o.get("items",[])}
+        replacements={}
         for old,new in zip(item_ids,new_item_ids):
             if old not in by_id:return {"ok":False,"error":f"Item {old} not in order"}
-            old_pid=by_id[old]["product_id"];new_pid,new_item=self._item_product(new)
+            old_pid=by_id[old]["product_id"]
+            new_pid,new_item=self._item_product(new)
             if not new_item or not new_item.get("available"):return {"ok":False,"error":f"New item {new} unavailable"}
             if old_pid!=new_pid:return {"ok":False,"error":"New item must be same product"}
-        o["status"]="pending (items modifed)"
-        return {"ok":True,"order_id":order_id,"status":o["status"],"changed":len(item_ids)}
+            replacements[old]=(new_pid,new,new_item)
+
+        new_order_items=[]
+        for item in o.get("items",[]):
+            iid=item.get("item_id")
+            if iid not in replacements:
+                new_order_items.append(item)
+                continue
+            pid,new_iid,var=replacements[iid]
+            new_order_items.append({
+                "name":self.db["products"][pid].get("name"),
+                "product_id":pid,
+                "item_id":new_iid,
+                "price":var.get("price"),
+                "options":var.get("options"),
+            })
+        o["items"]=new_order_items
+        o["modified_payment_method_id"]=payment_method_id
+        return {"ok":True,"order_id":order_id,"status":o.get("status"),"changed":len(item_ids)}
 
     def _tool_modify_pending_order_address(self,order_id,address1,address2,city,state,country,zip):
         o=self.db["orders"].get(order_id)
@@ -137,15 +156,32 @@ class RetailToolExecutor:
         o=self.db["orders"].get(order_id)
         if not o:return {"ok":False,"error":"Order not found"}
         if o.get("status")!="delivered":return {"ok":False,"error":"Order is not delivered"}
-        o["status"]="return requested";o["return_item_ids"]=list(item_ids);o["refund_payment_method_id"]=payment_method_id
-        return {"ok":True,"order_id":order_id,"status":o["status"],"returned_items":len(item_ids)}
+        order_item_ids={x.get("item_id") for x in o.get("items",[])}
+        if not set(item_ids).issubset(order_item_ids):return {"ok":False,"error":"One or more items not in order"}
+        o["return_request"]={
+            "item_ids":list(item_ids),
+            "payment_method_id":payment_method_id,
+        }
+        return {"ok":True,"order_id":order_id,"status":o.get("status"),"returned_items":len(item_ids)}
 
     def _tool_exchange_delivered_order_items(self,order_id,item_ids,new_item_ids,payment_method_id):
         o=self.db["orders"].get(order_id)
         if not o:return {"ok":False,"error":"Order not found"}
         if o.get("status")!="delivered":return {"ok":False,"error":"Order is not delivered"}
-        o["status"]="exchange requested"
-        return {"ok":True,"order_id":order_id,"status":o["status"],"exchanged_items":len(item_ids)}
+        if len(item_ids)!=len(new_item_ids):return {"ok":False,"error":"Item lists length mismatch"}
+        by_id={x["item_id"]:x for x in o.get("items",[])}
+        for old,new in zip(item_ids,new_item_ids):
+            if old not in by_id:return {"ok":False,"error":f"Item {old} not in order"}
+            old_pid=by_id[old].get("product_id")
+            new_pid,new_item=self._item_product(new)
+            if not new_item or not new_item.get("available"):return {"ok":False,"error":f"New item {new} unavailable"}
+            if old_pid!=new_pid:return {"ok":False,"error":"New item must be same product"}
+        o["exchange_request"]={
+            "item_ids":list(item_ids),
+            "new_item_ids":list(new_item_ids),
+            "payment_method_id":payment_method_id,
+        }
+        return {"ok":True,"order_id":order_id,"status":o.get("status"),"exchanged_items":len(item_ids)}
 
     def _tool_modify_user_address(self,user_id,address1,address2,city,state,country,zip):
         u=self.db["users"].get(user_id)

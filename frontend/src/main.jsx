@@ -170,8 +170,8 @@ function App(){
    <header>
     <div>
      <div className="eyebrow">GENAI / AGENTIC AI</div>
-     <h1>Clean Baseline Agent</h1>
-     <p>LLM + real tools + Retail DB + evaluator. No simulator, no guardrail engine, no hard-coded trajectory.</p>
+     <h1>Paper-Style Agent Evaluation</h1>
+     <p>LLM user simulator ↔ LLM agent ↔ real Retail tools/DB, with final-state outcome evaluation.</p>
     </div>
     <div className="header-badge">τ²-bench Retail</div>
    </header>
@@ -179,7 +179,7 @@ function App(){
    <section className="budget-card">
     <div>
      <strong>Baseline architecture</strong>
-     <span>Task → LLM → real tools → db.json → LLM → final answer → evaluator</span>
+     <span>LLM User ↔ Agent ↔ real tools ↔ db.json → Final DB State Evaluator</span>
     </div>
     <div className="budget-tip">Backend: localhost:8007</div>
    </section>
@@ -201,7 +201,7 @@ function App(){
      </label>
      <label>Agent setup
       <select value="tools" disabled>
-       <option value="tools">Clean LLM + Tools Baseline</option>
+       <option value="tools">LLM Agent + LLM User Simulator</option>
       </select>
      </label>
      <label>Provider
@@ -254,7 +254,7 @@ function App(){
    {s&&<>
     <div className="section-title"><h2>1. Outcome & Reliability</h2></div>
     <section className="metrics-grid">
-     <Metric label="Task success" value={pct(s.task_success_rate)} hint="Final action outcome + required communication"/>
+     <Metric label="Task success" value={pct(s.task_success_rate)} hint="Final DB state + required communication"/>
      <Metric label={`pass@${s.repeats}`} value={pct(s.pass_at_k)} hint="At least one success"/>
      <Metric label={`pass^${s.repeats}`} value={pct(s.pass_power_k)} hint="Every repeat succeeds"/>
      <Metric label="Repeat consistency" value={pct(s.repeat_consistency)} hint={s.repeats===1?"Not meaningful with one repeat":"Stable outcomes"}/>
@@ -263,7 +263,7 @@ function App(){
 
     <div className="section-title"><h2>2. Tool & Action Quality</h2><p>Final Action measures outcome. Tool/argument metrics diagnose how the agent got there.</p></div>
     <section className="metrics-grid">
-     <Metric label="Final action score" value={pct(s.mean_final_action_score)} hint="Expected side effect matched, independent of lookup path"/>
+     <Metric label="Final state match" value={pct(s.final_state_match_rate)} hint="Affected DB entities match expected post-task state"/>
      <Metric label="Tool precision" value={pct(s.mean_tool_precision)} hint="Expected among actual"/>
      <Metric label="Tool recall" value={pct(s.mean_tool_recall)} hint="Reference tools recovered"/>
      <Metric label="Tool F1" value={pct(s.mean_tool_f1)} hint="Balanced tool score"/>
@@ -284,7 +284,10 @@ function App(){
      <Metric label="Reasoning / run" value={num(s.mean_reasoning_tokens,0)} hint="When reported by model API"/>
      <Metric label="Total input" value={s.total_input_tokens} hint={`Cached ${s.total_cached_input_tokens}`}/>
      <Metric label="Total output" value={s.total_output_tokens} hint="All runs combined"/>
-     <Metric label="LLM turns / run" value={num(s.mean_llm_turns,1)} hint="Max 9"/>
+     <Metric label="LLM turns / run" value={num(s.mean_llm_turns,1)} hint="Agent turns"/>
+     <Metric label="User-sim turns / run" value={num(s.mean_user_simulator_turns,1)} hint="LLM user simulator"/>
+     <Metric label="Sim input / run" value={num(s.mean_simulator_input_tokens,0)} hint="User-simulator input tokens"/>
+     <Metric label="Sim output / run" value={num(s.mean_simulator_output_tokens,0)} hint="User-simulator output tokens"/>
      <Metric label="Tool calls / run" value={num(s.mean_tool_calls,1)} hint="Actual calls"/>
      <Metric label="Mean latency" value={`${num(s.mean_latency_ms,0)} ms`} hint={`P95 ${num(s.p95_latency_ms,0)} ms`}/>
     </section>
@@ -297,12 +300,12 @@ function App(){
       </div>
       <div className="table-wrap">
        <table>
-        <thead><tr><th>Task</th><th>Outcome</th><th>Final Action</th><th>Tool F1</th><th>Args</th><th>Tokens In/Out</th><th>Termination</th></tr></thead>
+        <thead><tr><th>Task</th><th>Outcome</th><th>Final State</th><th>Tool F1</th><th>Args</th><th>Tokens In/Out</th><th>Termination</th></tr></thead>
         <tbody>{result.runs.map(r=>
          <tr key={r.run_id} onClick={()=>setSelectedRun(r)} className={selectedRun?.run_id===r.run_id?"selected":""}>
           <td>{r.task_id}</td>
           <td><Pill ok={r.success}>{r.success?"Success":"Failed"}</Pill></td>
-          <td>{pct(r.final_action_score)}</td>
+          <td>{r.final_state_match?"100%":"0%"}</td>
           <td>{pct(r.tool_f1)}</td>
           <td>{pct(r.argument_accuracy)}</td>
           <td>{r.input_tokens}/{r.output_tokens}</td>
@@ -320,7 +323,7 @@ function App(){
        <div className="trace-meta">
         <Pill ok={selectedRun.success}>{selectedRun.success?"SUCCESS":"FAILED"}</Pill>
         <span>Task {selectedRun.task_id}</span>
-        <span>{selectedRun.llm_turns} LLM turns</span>
+        <span>{selectedRun.llm_turns} agent turns</span><span>{selectedRun.user_simulator_turns||0} user-sim turns</span>
        </div>
 
        <div className="run-budget-grid">
@@ -362,6 +365,10 @@ function App(){
           </div>
          </div>
         )}
+       </div>
+       <div className="compare">
+        <div><small>EXPECTED FINAL STATE</small><pre>{JSON.stringify(selectedRun.expected_state_projection,null,2)}</pre></div>
+        <div><small>ACTUAL FINAL STATE</small><pre>{JSON.stringify(selectedRun.actual_state_projection,null,2)}</pre></div>
        </div>
       </>}
      </div>
